@@ -1,0 +1,41 @@
+--- ../smartphone_overdependence_chabot_v2-main/app_3_5_2_for_rag_v2_2025add.py	2026-05-10 05:44:47.000000000 +0000
++++ final_pkg/app_3_5_2_for_rag_v2_2025add.py	2026-05-30 00:42:40.946255164 +0000
+@@ -35,6 +35,8 @@
+     # 노드 팩토리 및 그래프 빌드
+     create_node_functions,
+     build_graph,
++    # [KG 추가] 지식 그래프 빌더
++    build_knowledge_graph,
+ )
+ 
+ # =========================================================
+@@ -188,6 +190,19 @@
+ if "rag_dict_index" not in st.session_state:
+     st.session_state.rag_dict_index = build_rag_dict_index(st.session_state.rag_dict)
+ 
++# [KG 추가] 지식 그래프를 세션 단위로 1회 빌드해 캐싱.
++#           build_knowledge_graph 가 None(모듈 로드 실패)이면 KG 없이 동작.
++if "knowledge_graph" not in st.session_state:
++    if build_knowledge_graph is not None:
++        try:
++            st.session_state.knowledge_graph = build_knowledge_graph(
++                st.session_state.rag_dict
++            )
++        except Exception as _kg_e:
++            st.session_state.knowledge_graph = None
++    else:
++        st.session_state.knowledge_graph = None
++
+ 
+ # =========================================================
+ # Hugging Face에서 DB 다운로드
+@@ -518,7 +533,8 @@
+                         vectorstore,
+                         llms,
+                         status_callback,  # 초기 콜백
+-                        st.session_state.rag_dict_index
++                        st.session_state.rag_dict_index,
++                        knowledge_graph=st.session_state.get("knowledge_graph"),  # [KG 추가]
+                         )
+                     st.session_state.graph = build_graph(st.session_state.node_functions)
+ 

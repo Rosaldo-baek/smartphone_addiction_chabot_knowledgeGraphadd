@@ -1,0 +1,31 @@
+# --- Streamlit (UI) ---
+streamlit==1.50.0
+ 
+# --- LangChain 코어 ---
+langchain==0.3.27
+langchain-core==0.3.72
+langchain-openai==0.3.28
+langchain-chroma==0.2.5
+ 
+# --- LangGraph (워크플로우) ---
+langgraph==0.6.2
+langgraph-checkpoint==2.1.1
+ 
+# --- 벡터DB ---
+chromadb==1.4.0
+ 
+# --- OpenAI ---
+tiktoken==0.9.0
+ 
+# --- Hugging Face (ChromaDB 다운로드용) ---
+huggingface-hub==0.34.1
+ 
+# --- 데이터 처리 ---
+pandas==2.3.1
+ 
+# --- 기본 유틸 (표준라이브러리 외) ---
+# json, re, os, sys, logging, typing, textwrap → 표준라이브러리이므로 불필요
+ 
+
+# --- 지식 그래프 (인메모리, 외부 DB 불필요) ---
+networkx==3.4.2

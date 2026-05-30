@@ -1,0 +1,148 @@
+--- ../smartphone_overdependence_chabot_v2-main/script/smart_langgraph_for_3_5_2_v3_2025add.py	2026-05-10 05:44:47.000000000 +0000
++++ final_pkg/script/smart_langgraph_for_3_5_2_v3_2025add.py	2026-05-30 00:42:40.949670760 +0000
+@@ -22,6 +22,29 @@
+ from langgraph.graph import StateGraph, START, END
+ from langgraph.checkpoint.memory import MemorySaver
+ 
++# =========================================================
++# [KG 추가] 지식 그래프 모듈 로드
++#   script/kg/ 폴더를 path에 추가해 KG 통합 어댑터를 import 한다.
++#   import 실패 시에도 기존 동작이 깨지지 않도록 방어적으로 처리.
++# =========================================================
++import sys as _sys
++_KG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kg")
++if _KG_DIR not in _sys.path:
++    _sys.path.insert(0, _KG_DIR)
++try:
++    from kg_integration import (
++        build_knowledge_graph,
++        kg_infer_dict_hint,
++        kg_ingest_from_state,
++        kg_validate_answer,
++        kg_build_trend_context,
++    )
++    _KG_AVAILABLE = True
++except Exception as _kg_e:  # KG 모듈 로드 실패 시 기존 동작으로 폴백
++    logging.getLogger(__name__).warning("KG 모듈 로드 실패, 기존 RAG로 동작: %s", _kg_e)
++    _KG_AVAILABLE = False
++    build_knowledge_graph = None
++
+ 
+ # =========================================================
+ # 로거 설정
+@@ -849,7 +872,8 @@
+             pass
+     
+     return "\n\n---\n\n".join(blocks)
+-def create_node_functions(vectorstore, llms, status_callback, rag_dict_index):
++def create_node_functions(vectorstore, llms, status_callback, rag_dict_index,
++                          knowledge_graph=None):
+     """
+     모든 노드 함수를 생성하는 팩토리 함수.
+     
+@@ -858,10 +882,16 @@
+         llms: LLM 딕셔너리
+         status_callback: 상태 업데이트 콜백 함수
+         rag_dict_index: RAG Dictionary 인덱스
++        knowledge_graph: [KG 추가] build_knowledge_graph() 반환 dict
++                         {"graph":..., "reasoner":...}. None이면 기존 동작.
+         
+     Returns:
+         dict: 노드 이름 → 노드 함수 매핑
+     """
++    # [KG 추가] 그래프/추론기 참조 확보 (없으면 None → 모든 KG 호출이 폴백)
++    _kg_graph = (knowledge_graph or {}).get("graph")
++    _kg_reasoner = (knowledge_graph or {}).get("reasoner")
++
+     # status_callback을 리스트로 감싸서 간접 참조 (그래프 캐싱 시 외부에서 교체 가능)
+     _callback_ref = [status_callback]
+     
+@@ -1660,7 +1690,17 @@
+             state['previous_context'] = context_text
+ 
+             # dict_hint 생성
+-            dict_hint = infer_dict_hint(user_input, context_text=context_text, rag_dict_index=rag_dict_index)
++            # [KG 패치] 그래프 다중홉 추론으로 라우팅/동의어/혼동쌍을 생성.
++            #           KG 결과가 비면 기존 infer_dict_hint 로 자동 폴백.
++            dict_hint = kg_infer_dict_hint(
++                user_input,
++                context_text=context_text,
++                reasoner=_kg_reasoner,
++                fallback_fn=infer_dict_hint,
++                rag_dict_index=rag_dict_index,
++            ) if _KG_AVAILABLE else infer_dict_hint(
++                user_input, context_text=context_text, rag_dict_index=rag_dict_index
++            )
+             state["dict_hint"] = dict_hint
+             
+             # [개선] 개인기억 질문을 키워드 기반으로 판정 (LLM 호출 제거)
+@@ -1817,11 +1857,24 @@
+             user_input = (state.get("resolved_question") or state.get("input") or "").strip()
+             chat_history = state.get("chat_history", [])
+ 
+-            dict_hint = state.get("dict_hint") or infer_dict_hint(
+-                user_input,
+-                context_text=state.get("previous_context", ""),
+-                rag_dict_index=rag_dict_index
+-            )
++            # [KG 패치] state에 dict_hint가 이미 있으면 재사용,
++            #           없으면 KG 추론(폴백 내장)으로 생성.
++            if state.get("dict_hint"):
++                dict_hint = state["dict_hint"]
++            elif _KG_AVAILABLE:
++                dict_hint = kg_infer_dict_hint(
++                    user_input,
++                    context_text=state.get("previous_context", ""),
++                    reasoner=_kg_reasoner,
++                    fallback_fn=infer_dict_hint,
++                    rag_dict_index=rag_dict_index,
++                )
++            else:
++                dict_hint = infer_dict_hint(
++                    user_input,
++                    context_text=state.get("previous_context", ""),
++                    rag_dict_index=rag_dict_index
++                )
+             state["dict_hint"] = dict_hint
+ 
+             raw_followup_type = state.get("followup_type") or "none"
+@@ -2534,6 +2587,15 @@
+             state.setdefault("debug_info", {})
+             state["debug_info"]["missing_years"] = missing_years
+ 
++            # [KG 패치] 추출된 연도별 수치를 KG 사실 계층에 적재.
++            #           이후 추이 질의/수치 교차검증에 재사용된다.
++            if _KG_AVAILABLE and _kg_graph is not None:
++                try:
++                    ingested = kg_ingest_from_state(_kg_graph, state, metric="과의존률")
++                    state["debug_info"]["kg_ingested"] = ingested
++                except Exception as _e:
++                    logger.warning("KG 수치 적재 실패: %s", _e)
++
+         except Exception as e:
+             pass
+ 
+@@ -2700,6 +2762,23 @@
+             if scope_issues and validation_result == "PASS":
+                 state["validation_reason"] = "; ".join(scope_issues)
+ 
++            # [KG 패치] 답변 본문의 (연도, 대상, 수치)를 KG 사실값과 교차검증.
++            #           명백한 MISMATCH가 있으면 근거부족(재검색)으로 강등.
++            #           NOT_IN_KG(검증불가)는 무시하여 오탐을 방지한다.
++            if _KG_AVAILABLE and _kg_graph is not None:
++                try:
++                    draft = state.get("draft_answer") or state.get("final_answer") or ""
++                    kg_check = kg_validate_answer(_kg_graph, draft, metric="과의존률")
++                    state.setdefault("debug_info", {})["kg_value_check"] = kg_check
++                    if kg_check.get("has_mismatch"):
++                        state["validation_result"] = "FAIL_NO_EVIDENCE"
++                        state["validation_reason"] = (
++                            "KG 사실값과 답변 수치 불일치: "
++                            + str(kg_check.get("mismatches"))
++                        )
++                except Exception as _e:
++                    logger.warning("KG 검증 실패: %s", _e)
++
+             return state
+ 
+         except Exception as e:
